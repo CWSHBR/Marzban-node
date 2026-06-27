@@ -238,13 +238,14 @@ class Service(object):
     def start(self, session_id: UUID = Body(embed=True), config: str = Body(embed=True)):
         self.match_session_id(session_id)
 
-        config, panel_config_hash = self._build_config(config, self.client_ip)
+        panel_config = config
+        config, panel_config_hash = self._build_config(panel_config, self.client_ip)
 
         if self.persistent_mode and self.core.started:
             reason = self._stale_reason(panel_config_hash, self.client_ip)
             if reason:
                 if self.auto_restart_stale_node:
-                    return self.restart(session_id=session_id, config=config.to_json())
+                    return self.restart(session_id=session_id, config=panel_config)
                 return self.response(
                     attached=True,
                     needs_restart=True,
