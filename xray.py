@@ -187,6 +187,8 @@ class XRayCore:
         if config.get('log', {}).get('logLevel') in ('none', 'error'):
             config['log']['logLevel'] = 'warning'
 
+        logger.info("Starting Xray with config:\n%s", config.to_json(indent=2))
+
         cmd = [
             self.executable_path,
             "run",
