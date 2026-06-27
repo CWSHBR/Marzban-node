@@ -20,3 +20,8 @@ DEBUG = config("DEBUG", cast=bool, default=False)
 SERVICE_PROTOCOL = config('SERVICE_PROTOCOL', cast=str, default='rest')
 
 INBOUNDS = config("INBOUNDS", cast=lambda v: [x.strip() for x in v.split(',')] if v else [], default="")
+
+XRAY_PERSISTENT_MODE = config("XRAY_PERSISTENT_MODE", cast=bool, default=False)
+XRAY_RESTORE_LAST_CONFIG = config("XRAY_RESTORE_LAST_CONFIG", cast=bool, default=False)
+XRAY_LAST_CONFIG_PATH = config("XRAY_LAST_CONFIG_PATH", default="/var/lib/marzban-node/runtime/xray_config.json")
+AUTO_RESTART_STALE_NODE = config("AUTO_RESTART_STALE_NODE", cast=bool, default=False)
