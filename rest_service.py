@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import ipaddress
 import json
 import os
 import time
@@ -15,6 +16,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from config import (
     AUTO_RESTART_STALE_NODE,
+    XRAY_API_ALLOWED_IPS,
     XRAY_ASSETS_PATH,
     XRAY_EXECUTABLE_PATH,
     XRAY_LAST_CONFIG_PATH,
@@ -45,6 +47,7 @@ class Service(object):
         restore_last_config: bool = XRAY_RESTORE_LAST_CONFIG,
         last_config_path: str = XRAY_LAST_CONFIG_PATH,
         auto_restart_stale_node: bool = AUTO_RESTART_STALE_NODE,
+        api_allowed_ips: list = XRAY_API_ALLOWED_IPS,
     ):
         self.router = APIRouter()
 
@@ -52,6 +55,9 @@ class Service(object):
         self.restore_last_config = restore_last_config
         self.last_config_path = last_config_path
         self.auto_restart_stale_node = auto_restart_stale_node
+        self.api_allowed_networks = [
+            ipaddress.ip_network(value, strict=False) for value in api_allowed_ips
+        ]
 
         self.connected = False
         self.client_ip = None
@@ -101,7 +107,18 @@ class Service(object):
 
     @staticmethod
     def get_config_hash(config: str):
+        """Hash of everything but the users.
+
+        The panel keeps users in sync over the Xray API, so the user list of the
+        running config drifts from the one it was started with. A new panel's
+        snapshot differing only in users is not a reason to restart Xray.
+        """
         data = json.loads(config)
+        for inbound in data.get("inbounds") or []:
+            settings = inbound.get("settings")
+            if isinstance(settings, dict):
+                settings.pop("clients", None)
+                settings.pop("users", None)
         payload = json.dumps(data, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -128,14 +145,28 @@ class Service(object):
         self.running_panel_ip = None
         self.running_config_started_at = None
 
+    def _panel_ip_allowed(self, panel_ip: str):
+        """Whether the running Xray already lets this panel use its API."""
+        if not self.running_panel_ip or self.running_panel_ip == panel_ip:
+            return True
+        try:
+            address = ipaddress.ip_address(panel_ip)
+        except ValueError:
+            return False
+        return any(address in network for network in self.api_allowed_networks)
+
     def _stale_reason(self, panel_config_hash: str, panel_ip: str):
         if self.panel_config_hash and self.panel_config_hash != panel_config_hash:
             return "config_changed"
-        if self.running_panel_ip and self.running_panel_ip != panel_ip:
+        if not self._panel_ip_allowed(panel_ip):
             return "panel_ip_changed"
         return None
 
-    def save_runtime_config(self, config: XRayConfig):
+    @property
+    def _last_hash_path(self):
+        return self.last_config_path + ".hash"
+
+    def save_runtime_config(self, config: XRayConfig, panel_config_hash: str):
         if not (self.persistent_mode and self.restore_last_config):
             return
 
@@ -145,8 +176,13 @@ class Service(object):
 
         with open(self.last_config_path, "w") as file:
             file.write(config.to_json())
-
         os.chmod(self.last_config_path, 0o600)
+
+        # The persisted file is the node-side config (API inbound added), whose
+        # hash never matches the panel's. Keep the panel's hash next to it so a
+        # restored core still attaches instead of restarting.
+        with open(self._last_hash_path, "w") as file:
+            file.write(panel_config_hash)
 
     def restore_runtime_config(self):
         if not os.path.isfile(self.last_config_path):
@@ -156,8 +192,13 @@ class Service(object):
             config = file.read()
 
         xray_config, panel_config_hash = self._build_config(config, "127.0.0.1")
+        if os.path.isfile(self._last_hash_path):
+            with open(self._last_hash_path) as file:
+                panel_config_hash = file.read().strip() or panel_config_hash
         try:
             self.core.start(xray_config)
+            # Only 127.0.0.1 and XRAY_API_ALLOWED_IPS reach this core's API, so a
+            # panel outside that list still gets a restart on its first start.
             self._mark_running(panel_config_hash, "127.0.0.1")
             logger.info("Restored Xray core from last persisted config.")
         except Exception as exc:
@@ -200,8 +241,7 @@ class Service(object):
         reason = "panel_ip_changed" if (
             self.persistent_mode
             and self.core.started
-            and self.running_panel_ip
-            and self.running_panel_ip != self.client_ip
+            and not self._panel_ip_allowed(self.client_ip)
         ) else None
 
         return self.response(
@@ -277,7 +317,7 @@ class Service(object):
             )
 
         self._mark_running(panel_config_hash, self.client_ip)
-        self.save_runtime_config(config)
+        self.save_runtime_config(config, panel_config_hash)
 
         return self.response(
             attached=False,
@@ -322,7 +362,7 @@ class Service(object):
             )
 
         self._mark_running(panel_config_hash, self.client_ip)
-        self.save_runtime_config(config)
+        self.save_runtime_config(config, panel_config_hash)
 
         return self.response(
             attached=False,

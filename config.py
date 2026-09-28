@@ -25,3 +25,9 @@ XRAY_PERSISTENT_MODE = config("XRAY_PERSISTENT_MODE", cast=bool, default=False)
 XRAY_RESTORE_LAST_CONFIG = config("XRAY_RESTORE_LAST_CONFIG", cast=bool, default=False)
 XRAY_LAST_CONFIG_PATH = config("XRAY_LAST_CONFIG_PATH", default="/var/lib/marzban-node/runtime/xray_config.json")
 AUTO_RESTART_STALE_NODE = config("AUTO_RESTART_STALE_NODE", cast=bool, default=False)
+
+# Every panel that may lead (IPs or CIDRs, as the node sees them). Baked into
+# the Xray API routing rule up front, so a panel failover is not a config change
+# and does not restart Xray.
+XRAY_API_ALLOWED_IPS = config(
+    "XRAY_API_ALLOWED_IPS", cast=lambda v: [x.strip() for x in v.split(',') if x.strip()], default="")

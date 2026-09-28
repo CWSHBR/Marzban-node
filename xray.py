@@ -6,7 +6,8 @@ import threading
 from collections import deque
 from contextlib import contextmanager
 
-from config import DEBUG, SSL_CERT_FILE, SSL_KEY_FILE, XRAY_API_HOST, XRAY_API_PORT, INBOUNDS
+from config import (DEBUG, INBOUNDS, SSL_CERT_FILE, SSL_KEY_FILE, XRAY_API_ALLOWED_IPS,
+                    XRAY_API_HOST, XRAY_API_PORT)
 from logger import logger
 
 
@@ -83,10 +84,7 @@ class XRayConfig(dict):
             "inboundTag": [
                 "API_INBOUND"
             ],
-            "source": [
-                "127.0.0.1",
-                self.peer_ip
-            ],
+            "source": list(dict.fromkeys(["127.0.0.1", self.peer_ip, *XRAY_API_ALLOWED_IPS])),
             "outboundTag": "API",
             "type": "field"
         }

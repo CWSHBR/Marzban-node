@@ -217,3 +217,72 @@ def test_non_persistent_mode_keeps_stop_on_reconnect_and_disconnect(tmp_path, mo
     srv.core.started_value = True
     srv.disconnect()
     assert srv.core.stop_count == 2
+
+
+def test_allowed_panel_failover_attaches_without_restart(tmp_path, monkeypatch):
+    rest_service = load_rest_service(tmp_path, monkeypatch)
+    srv = rest_service.Service(persistent_mode=True, auto_restart_stale_node=True,
+                               api_allowed_ips=["10.0.0.1", "10.0.0.0/24"])
+    srv.core = FakeCore()
+    body = config()
+    srv.connect(request("10.0.0.1"))
+    srv.start(session_id=srv.session_id, config=body)
+
+    connected = srv.connect(request("10.0.0.2"))
+    response = srv.start(session_id=srv.session_id, config=body)
+
+    assert connected["needs_restart"] is False
+    assert response["attached"] is True
+    assert response["needs_restart"] is False
+    assert srv.core.restart_count == 0
+
+
+def test_panel_outside_allowlist_still_needs_restart(tmp_path, monkeypatch):
+    rest_service = load_rest_service(tmp_path, monkeypatch)
+    srv = rest_service.Service(persistent_mode=True, api_allowed_ips=["10.0.0.0/24"])
+    srv.core = FakeCore()
+    srv.connect(request("10.0.0.1"))
+    srv.start(session_id=srv.session_id, config=config())
+    srv.connect(request("192.168.1.5"))
+
+    response = srv.start(session_id=srv.session_id, config=config())
+
+    assert response["needs_restart"] is True
+    assert response["reason"] == "panel_ip_changed"
+
+
+def test_user_list_change_is_not_a_config_change(tmp_path, monkeypatch):
+    rest_service = load_rest_service(tmp_path, monkeypatch)
+    srv = service(rest_service, persistent=True)
+    srv.connect(request())
+    srv.start(session_id=srv.session_id, config=config())
+
+    with_users = json.loads(config())
+    with_users["inbounds"][0]["settings"]["clients"] = [{"id": "u1", "email": "1.alice"}]
+    response = srv.start(session_id=srv.session_id, config=json.dumps(with_users))
+
+    assert response["attached"] is True
+    assert response["needs_restart"] is False
+    assert srv.core.restart_count == 0
+
+
+def test_restored_core_attaches_by_persisted_panel_hash(tmp_path, monkeypatch):
+    rest_service = load_rest_service(tmp_path, monkeypatch)
+    path = str(tmp_path / "runtime" / "xray_config.json")
+    kwargs = dict(persistent_mode=True, restore_last_config=True, last_config_path=path,
+                  api_allowed_ips=["10.0.0.0/24"])
+    first = rest_service.Service(**kwargs)
+    first.core = FakeCore()
+    first.connect(request("10.0.0.1"))
+    first.start(session_id=first.session_id, config=config())
+    assert os.path.isfile(path + ".hash")
+
+    monkeypatch.setattr(rest_service, "XRayCore", lambda **_: FakeCore())
+    second = rest_service.Service(**kwargs)
+    assert second.core.started is True
+    second.connect(request("10.0.0.2"))
+    response = second.start(session_id=second.session_id, config=config())
+
+    assert response["attached"] is True
+    assert response["needs_restart"] is False
+    assert second.core.restart_count == 0
