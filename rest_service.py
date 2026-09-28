@@ -106,15 +106,31 @@ class Service(object):
         }
 
     @staticmethod
-    def get_config_hash(config: str):
-        """Hash of everything but the users.
+    def get_config_hash(config: XRayConfig):
+        """Hash of what this node actually runs, minus what may differ harmlessly.
 
-        The panel keeps users in sync over the Xray API, so the user list of the
-        running config drifts from the one it was started with. A new panel's
-        snapshot differing only in users is not a reason to restart Xray.
+        Computed on the node-side config (INBOUNDS filter and API applied), so a
+        config restored from disk hashes the same as the panel's config it came
+        from. Left out:
+        - users: the panel keeps them in sync over the Xray API, so the running
+          list drifts from the one Xray was started with;
+        - the API inbound, its routing rule and api/stats: the node rebuilds them
+          itself, and each HA panel ships its own random API port.
         """
-        data = json.loads(config)
-        for inbound in data.get("inbounds") or []:
+        data = json.loads(config.to_json())
+        data["inbounds"] = [
+            inbound for inbound in data.get("inbounds") or []
+            if inbound.get("tag") != "API_INBOUND"
+        ]
+        routing = data.get("routing")
+        if isinstance(routing, dict):
+            routing["rules"] = [
+                rule for rule in routing.get("rules") or []
+                if "API_INBOUND" not in (rule.get("inboundTag") or [])
+            ]
+        data.pop("api", None)
+        data.pop("stats", None)
+        for inbound in data["inbounds"]:
             settings = inbound.get("settings")
             if isinstance(settings, dict):
                 settings.pop("clients", None)
@@ -124,8 +140,8 @@ class Service(object):
 
     def _build_config(self, config: str, client_ip: str):
         try:
-            panel_config_hash = self.get_config_hash(config)
             xray_config = XRayConfig(config, client_ip)
+            panel_config_hash = self.get_config_hash(xray_config)
         except json.decoder.JSONDecodeError as exc:
             raise HTTPException(
                 status_code=422,
@@ -162,11 +178,7 @@ class Service(object):
             return "panel_ip_changed"
         return None
 
-    @property
-    def _last_hash_path(self):
-        return self.last_config_path + ".hash"
-
-    def save_runtime_config(self, config: XRayConfig, panel_config_hash: str):
+    def save_runtime_config(self, config: XRayConfig):
         if not (self.persistent_mode and self.restore_last_config):
             return
 
@@ -178,12 +190,6 @@ class Service(object):
             file.write(config.to_json())
         os.chmod(self.last_config_path, 0o600)
 
-        # The persisted file is the node-side config (API inbound added), whose
-        # hash never matches the panel's. Keep the panel's hash next to it so a
-        # restored core still attaches instead of restarting.
-        with open(self._last_hash_path, "w") as file:
-            file.write(panel_config_hash)
-
     def restore_runtime_config(self):
         if not os.path.isfile(self.last_config_path):
             return
@@ -192,9 +198,6 @@ class Service(object):
             config = file.read()
 
         xray_config, panel_config_hash = self._build_config(config, "127.0.0.1")
-        if os.path.isfile(self._last_hash_path):
-            with open(self._last_hash_path) as file:
-                panel_config_hash = file.read().strip() or panel_config_hash
         try:
             self.core.start(xray_config)
             # Only 127.0.0.1 and XRAY_API_ALLOWED_IPS reach this core's API, so a
@@ -317,7 +320,7 @@ class Service(object):
             )
 
         self._mark_running(panel_config_hash, self.client_ip)
-        self.save_runtime_config(config, panel_config_hash)
+        self.save_runtime_config(config)
 
         return self.response(
             attached=False,
@@ -362,7 +365,7 @@ class Service(object):
             )
 
         self._mark_running(panel_config_hash, self.client_ip)
-        self.save_runtime_config(config, panel_config_hash)
+        self.save_runtime_config(config)
 
         return self.response(
             attached=False,

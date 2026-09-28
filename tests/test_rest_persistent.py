@@ -266,6 +266,26 @@ def test_user_list_change_is_not_a_config_change(tmp_path, monkeypatch):
     assert srv.core.restart_count == 0
 
 
+def test_other_panels_api_port_is_not_a_config_change(tmp_path, monkeypatch):
+    rest_service = load_rest_service(tmp_path, monkeypatch)
+    srv = service(rest_service, persistent=True)
+
+    def with_api(port):
+        payload = json.loads(config())
+        payload["inbounds"].insert(0, {"tag": "API_INBOUND", "protocol": "dokodemo-door",
+                                       "port": port, "settings": {"address": "127.0.0.1"}})
+        payload["api"] = {"tag": "API", "services": ["HandlerService"]}
+        payload["routing"] = {"rules": [{"inboundTag": ["API_INBOUND"], "outboundTag": "API", "type": "field"}]}
+        return json.dumps(payload)
+
+    srv.connect(request())
+    srv.start(session_id=srv.session_id, config=with_api(59571))
+    response = srv.start(session_id=srv.session_id, config=with_api(18398))
+
+    assert response["attached"] is True
+    assert response["needs_restart"] is False
+
+
 def test_restored_core_attaches_by_persisted_panel_hash(tmp_path, monkeypatch):
     rest_service = load_rest_service(tmp_path, monkeypatch)
     path = str(tmp_path / "runtime" / "xray_config.json")
@@ -275,7 +295,7 @@ def test_restored_core_attaches_by_persisted_panel_hash(tmp_path, monkeypatch):
     first.core = FakeCore()
     first.connect(request("10.0.0.1"))
     first.start(session_id=first.session_id, config=config())
-    assert os.path.isfile(path + ".hash")
+    assert os.path.isfile(path)
 
     monkeypatch.setattr(rest_service, "XRayCore", lambda **_: FakeCore())
     second = rest_service.Service(**kwargs)
